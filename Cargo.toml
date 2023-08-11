@@ -1,0 +1,11 @@
+[package]
+name = "pocketcron"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A tiny cronjob runner"
+repository = "https://github.com/stephank/pocketcron"
+
+[dependencies]
+chrono = { version = "0.4.26", default-features = false, features = ["clock"] }
+cron = "0.12.0"
