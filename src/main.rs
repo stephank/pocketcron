@@ -10,14 +10,21 @@ use std::{
 use chrono::{offset::Local, DateTime, Duration};
 use cron::OwnedScheduleIterator;
 
+/// Description and state of a job.
 struct Job {
+    /// Job index, used as identifier for logging.
     id: usize,
+    /// Schedule iterator.
     upcoming: OwnedScheduleIterator<Local>,
+    /// Next time this job will run.
     next: Option<DateTime<Local>>,
+    /// Shell command.
     command: String,
+    /// Whether the process is running.
     is_running: bool,
 }
 
+/// Thread-safe job handle.
 type JobHandle = Arc<Mutex<Job>>;
 
 fn main() {
@@ -35,30 +42,39 @@ fn main() {
     loop {
         let now = Local::now();
 
+        // Find the minimum of all jobs' `next` time.
         // Max sleep is 1 minute, to account for any clock jumps.
         let mut next_min = now + Duration::minutes(1);
         for job_handle in &jobs {
             let mut job = job_handle.lock().unwrap();
 
+            // It's possible a job may not ever run again.
             let Some(next) = job.next else {
                 continue;
             };
 
+            // If in the future, aggregate in `next_min` .
             if now < next {
                 next_min = next.min(next_min);
                 continue;
             }
 
+            // Otherwise, the job needs to run.
             run_job(job_handle.clone());
 
+            // Iterate the schedule until we find the next time in the future.
             while job.next.filter(|next| now >= *next).is_some() {
                 job.next = job.upcoming.next();
             }
         }
 
-        if let Ok(delay) = (next_min - now).to_std() {
-            thread::sleep(delay);
-        }
+        // Delay until the aggregate `next_min` time.
+        // Safety: conversion can only fail if negative, which should never
+        // happen here.
+        let delay = (next_min - now)
+            .to_std()
+            .expect("unexpected negative sleep");
+        thread::sleep(delay);
     }
 }
 
@@ -71,6 +87,7 @@ fn load_jobs(jobs: &mut Vec<JobHandle>, path: OsString) {
         }
     };
 
+    // Read by line.
     let now = Local::now();
     for (line_no, line) in BufReader::new(file).lines().enumerate() {
         let line = match line {
@@ -81,6 +98,7 @@ fn load_jobs(jobs: &mut Vec<JobHandle>, path: OsString) {
             }
         };
 
+        // Ignore empty lines and comments.
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -95,11 +113,16 @@ fn load_jobs(jobs: &mut Vec<JobHandle>, path: OsString) {
             line.split_whitespace().nth(5)
         };
         let Some(command_start) = command_start else {
-            eprintln!("{}:{}: error: not enough elements", path.to_string_lossy(), line_no);
+            eprintln!(
+                "{}:{}: error: not enough elements",
+                path.to_string_lossy(),
+                line_no
+            );
             exit(1);
         };
         let command_start = command_start.as_ptr() as usize - line.as_ptr() as usize;
 
+        // Parse the schedule.
         let schedule = &line[..command_start];
         let schedule = if schedule.starts_with('@') {
             schedule.to_owned()
@@ -115,6 +138,7 @@ fn load_jobs(jobs: &mut Vec<JobHandle>, path: OsString) {
             }
         };
 
+        // Initialize the `Job` structure.
         let mut upcoming = schedule.after_owned(now);
         let next = upcoming.next();
         jobs.push(Arc::new(Mutex::new(Job {
@@ -132,6 +156,7 @@ fn run_job(job_handle: JobHandle) {
         let (id, mut command) = {
             let mut job = job_handle.lock().unwrap();
 
+            // Prevent overlap.
             if job.is_running {
                 return;
             }
